@@ -72,7 +72,7 @@ This repository now includes a Node.js CLI prototype that simulates the McDonald
 
 The codebase has been refactored to TypeScript with a small module layout:
 
-- `src/domain` exposes the order and bot types/constants.
+- `src/domain` exposes the order/bot types and small helpers for state transitions.
 - `src/services` contains the core `OrderController`.
 - `src/utils` holds the logger that formats timestamps.
 - `src/simulation` wires an example timeline used by the CLI entry point (`src/cli.ts`).

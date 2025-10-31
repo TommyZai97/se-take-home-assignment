@@ -3,11 +3,13 @@ import {
   BOT_STATUS,
   Bot,
   Order,
-  ORDER_STATUS,
   ORDER_TYPES,
   OrderStats,
   OrderType,
 } from "../domain/types";
+import { createOrder, getProcessingDuration, markComplete, markPending, markProcessing } from "../domain/order";
+import { assignOrderToBot, createBot, resetBot } from "../domain/bot";
+import { PendingQueue } from "./pendingQueue";
 
 interface AssignOptions {
   announceIdleForBots?: Bot[];
@@ -19,8 +21,7 @@ export class OrderController {
   private nextBotId = 1;
 
   private readonly orders: Order[] = [];
-  private readonly pendingVip: Order[] = [];
-  private readonly pendingNormal: Order[] = [];
+  private readonly pending = new PendingQueue();
   private readonly bots: Bot[] = [];
 
   private readonly stats: OrderStats = {
@@ -49,13 +50,16 @@ export class OrderController {
   }
 
   getPendingVip(): ReadonlyArray<Order> {
-    return [...this.pendingVip];
+    return this.pending.getVipSnapshot();
   }
 
   getPendingNormal(): ReadonlyArray<Order> {
-    return [...this.pendingNormal];
+    return this.pending.getNormalSnapshot();
   }
 
+  /**
+   * Fast-forwards the simulation clock, resolving any bot completions scheduled before the target time.
+   */
   advanceTo(targetTime: number): void {
     if (targetTime < this.currentTime) {
       throw new Error(
@@ -86,15 +90,7 @@ export class OrderController {
     this.advanceTo(time);
     this.validateOrderType(type);
 
-    const order: Order = {
-      id: this.nextOrderId++,
-      type,
-      status: ORDER_STATUS.PENDING,
-      createdAt: this.currentTime,
-      startedAt: null,
-      completedAt: null,
-    };
-
+    const order = createOrder(this.nextOrderId++, type, this.currentTime);
     this.orders.push(order);
     if (type === ORDER_TYPES.VIP) {
       this.stats.createdVip += 1;
@@ -102,7 +98,7 @@ export class OrderController {
       this.stats.createdNormal += 1;
     }
 
-    this.enqueueOrder(order);
+    this.pending.enqueue(order);
 
     this.logger.log(
       this.currentTime,
@@ -117,15 +113,7 @@ export class OrderController {
   addBot(time = this.currentTime): Bot {
     this.advanceTo(time);
 
-    const bot: Bot = {
-      id: this.nextBotId++,
-      status: BOT_STATUS.IDLE,
-      currentOrder: null,
-      busyUntil: null,
-      createdAt: this.currentTime,
-      lastIdleAnnouncement: null,
-    };
-
+    const bot = createBot(this.nextBotId++, this.currentTime);
     this.bots.push(bot);
     this.logger.log(this.currentTime, `Bot #${bot.id} created - Status: ACTIVE`);
 
@@ -146,19 +134,16 @@ export class OrderController {
 
     if (bot.status === BOT_STATUS.PROCESSING && bot.currentOrder) {
       const order = bot.currentOrder;
-      order.status = ORDER_STATUS.PENDING;
-      order.startedAt = null;
-      order.completedAt = null;
-
-      this.enqueueOrder(order, { front: true });
+      markPending(order);
+      this.pending.enqueue(order, true);
+      resetBot(bot);
 
       this.logger.log(
         this.currentTime,
-        `Bot #${bot.id} destroyed while PROCESSING ${this.describeOrderType(
-          order.type
-        )} Order #${order.id} - Returned to PENDING`
+        `Bot #${bot.id} destroyed while PROCESSING ${order.type} Order #${order.id} - Returned to PENDING`
       );
     } else {
+      resetBot(bot);
       this.logger.log(this.currentTime, `Bot #${bot.id} destroyed while IDLE`);
     }
 
@@ -183,7 +168,7 @@ export class OrderController {
     this.logger.pushRaw("Final Status:");
 
     const totalProcessed = this.stats.completedVip + this.stats.completedNormal;
-    const pendingCount = this.pendingVip.length + this.pendingNormal.length;
+    const pendingCount = this.pending.size();
 
     this.logger.pushRaw(
       `- Total Orders Processed: ${totalProcessed} (${this.stats.completedVip} VIP, ${this.stats.completedNormal} Normal)`
@@ -197,22 +182,24 @@ export class OrderController {
     return this.bots.some((bot) => bot.status === BOT_STATUS.PROCESSING);
   }
 
+  /**
+   * Sends work to any idle bots and emits idle notifications once queues are fully drained.
+   */
   private assignOrders(time: number, options: AssignOptions = {}): void {
     const idleBots = this.bots
       .filter((bot) => bot.status === BOT_STATUS.IDLE)
       .sort((a, b) => a.id - b.id);
 
     for (const bot of idleBots) {
-      const order = this.dequeueOrder();
+      const order = this.pending.dequeue();
       if (!order) {
-        continue;
+        break;
       }
 
       this.startProcessing(bot, order, time);
     }
 
-    const noPendingOrders =
-      this.pendingVip.length === 0 && this.pendingNormal.length === 0;
+    const noPendingOrders = this.pending.isEmpty();
     const anyProcessing = this.hasProcessingBots();
     const announceIdleForBots = options.announceIdleForBots ?? [];
 
@@ -243,18 +230,12 @@ export class OrderController {
   }
 
   private startProcessing(bot: Bot, order: Order, time: number): void {
-    order.status = ORDER_STATUS.PROCESSING;
-    order.startedAt = time;
-    bot.status = BOT_STATUS.PROCESSING;
-    bot.currentOrder = order;
-    bot.busyUntil = time + this.processingTimeSeconds;
-    bot.lastIdleAnnouncement = null;
+    markProcessing(order, time);
+    assignOrderToBot(bot, order, time + this.processingTimeSeconds);
 
     this.logger.log(
       time,
-      `Bot #${bot.id} picked up ${this.describeOrderType(order.type)} Order #${
-        order.id
-      } - Status: ${order.status}`
+      `Bot #${bot.id} picked up ${order.type} Order #${order.id} - Status: ${order.status}`
     );
   }
 
@@ -264,8 +245,7 @@ export class OrderController {
       return;
     }
 
-    order.status = ORDER_STATUS.COMPLETE;
-    order.completedAt = time;
+    markComplete(order, time);
 
     if (order.type === ORDER_TYPES.VIP) {
       this.stats.completedVip += 1;
@@ -273,19 +253,14 @@ export class OrderController {
       this.stats.completedNormal += 1;
     }
 
-    const processingTime =
-      order.startedAt !== null ? time - order.startedAt : 0;
+    const processingTime = getProcessingDuration(order, time);
 
     this.logger.log(
       time,
-      `Bot #${bot.id} completed ${this.describeOrderType(order.type)} Order #${
-        order.id
-      } - Status: ${order.status} (Processing time: ${processingTime}s)`
+      `Bot #${bot.id} completed ${order.type} Order #${order.id} - Status: ${order.status} (Processing time: ${processingTime}s)`
     );
 
-    bot.status = BOT_STATUS.IDLE;
-    bot.currentOrder = null;
-    bot.busyUntil = null;
+    resetBot(bot);
   }
 
   private findNextCompletingBot(): Bot | null {
@@ -307,33 +282,6 @@ export class OrderController {
     }
 
     return nextBot;
-  }
-
-  private dequeueOrder(): Order | null {
-    if (this.pendingVip.length > 0) {
-      return this.pendingVip.shift() ?? null;
-    }
-
-    if (this.pendingNormal.length > 0) {
-      return this.pendingNormal.shift() ?? null;
-    }
-
-    return null;
-  }
-
-  private enqueueOrder(order: Order, options: { front?: boolean } = {}): void {
-    const queue =
-      order.type === ORDER_TYPES.VIP ? this.pendingVip : this.pendingNormal;
-
-    if (options.front) {
-      queue.unshift(order);
-    } else {
-      queue.push(order);
-    }
-  }
-
-  private describeOrderType(type: OrderType): OrderType {
-    return type === ORDER_TYPES.VIP ? ORDER_TYPES.VIP : ORDER_TYPES.NORMAL;
   }
 
   private validateOrderType(type: OrderType): void {

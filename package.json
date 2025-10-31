@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc",
     "start": "npm run build && node dist/src/cli.js",
-    "test": "npm run build && node --test \"dist/test/**/*.test.js\""
+    "test": "npm run build && node --test dist/test/orderController.test.js"
   },
   "keywords": [],
   "author": "",

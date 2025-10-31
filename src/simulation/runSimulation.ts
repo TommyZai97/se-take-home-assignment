@@ -22,10 +22,19 @@ export function runSimulation(): string {
   controller.advanceTo(4);
   controller.addBot();
 
-  controller.advanceTo(15);
+  controller.advanceTo(5);
+  controller.createOrder(ORDER_TYPES.NORMAL);
+
+  controller.advanceTo(6);
+  controller.removeBot();
+
+  controller.advanceTo(7);
   controller.createOrder(ORDER_TYPES.VIP);
 
-  controller.advanceTo(25);
+  controller.advanceTo(15);
+  controller.addBot();
+
+  controller.advanceTo(36);
   controller.removeBot();
 
   controller.finalize();
