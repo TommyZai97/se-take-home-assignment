@@ -14,9 +14,10 @@ test("VIP orders are processed before normal orders", () => {
 
   const [bot] = controller.getBots();
   assert.ok(bot, "expected a bot to be registered");
-  assert.ok(bot.currentOrder, "expected bot to have an order assigned");
+  const currentOrder = bot.currentOrder;
+  assert.ok(currentOrder, "expected bot to have an order assigned");
   assert.equal(
-    bot.currentOrder.type,
+    currentOrder.type,
     ORDER_TYPES.VIP,
     "VIP order should be processed before normal order"
   );
@@ -29,6 +30,7 @@ test("Removing a processing bot returns the order to pending queue", () => {
   controller.addBot(0);
 
   const [bot] = controller.getBots();
+  assert.ok(bot.currentOrder);
   assert.equal(bot.currentOrder, order, "Bot should be processing the created order");
 
   controller.removeBot(5);
