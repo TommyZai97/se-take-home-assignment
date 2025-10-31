@@ -8,6 +8,7 @@ PROJECT_ROOT="${SCRIPT_DIR}/.."
 echo "Running unit tests..."
 
 cd "${PROJECT_ROOT}"
+npm ci
 npm test
 
 echo "Unit tests completed"

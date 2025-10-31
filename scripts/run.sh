@@ -9,6 +9,7 @@ RESULT_FILE="${SCRIPT_DIR}/result.txt"
 echo "Running CLI application..."
 
 cd "${PROJECT_ROOT}"
+npm ci >/dev/null
 npm run build >/dev/null
 node dist/src/cli.js | tee "${RESULT_FILE}"
 
